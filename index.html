@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPJ-3C — Cadastro de usuários e equipes</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:920px;margin:24px auto;padding:0 16px;color:#222;line-height:1.4}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:17px;margin:26px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}
+  .intro{color:#555;margin:0 0 8px}
+  .card{border:1px solid #ccc;border-radius:6px;padding:12px;margin:10px 0;background:#fafafa}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px}
+  label{display:flex;flex-direction:column;font-size:13px;color:#444;gap:3px}
+  label.chk{flex-direction:row;align-items:center;gap:6px}
+  input,select{padding:7px;border:1px solid #bbb;border-radius:4px;font-size:14px;background:#fff;box-sizing:border-box;width:100%}
+  input[type=checkbox]{width:auto}
+  button{padding:7px 12px;border:1px solid #888;border-radius:4px;background:#fff;cursor:pointer;font-size:14px;margin-top:8px}
+  button:hover{background:#f0f0f0}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  button.primary{background:#1f5fa8;color:#fff;border-color:#1f5fa8;padding:10px 22px;font-size:15px}
+  button.danger{color:#a22;border-color:#d9a3a3}
+  .membro{display:grid;grid-template-columns:2fr 2fr auto auto;gap:8px;align-items:center;margin:6px 0}
+  .vazio{color:#888;font-style:italic}
+  .msg{margin-top:12px;padding:10px 12px;border-radius:4px;display:none;white-space:pre-wrap}
+  .msg.ok{display:block;background:#e6f4ea;color:#1d5c2c}
+  .msg.erro{display:block;background:#fbe9e9;color:#8a1c1c}
+  @media (max-width:700px){.grid{grid-template-columns:1fr}.membro{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+
+<h1>CPJ-3C — Cadastro de usuários e equipes</h1>
+<p class="intro">Preencha os usuários e, se quiser, as equipes com seus integrantes. Ao final, clique em Enviar. Os dados são enviados diretamente para a equipe de implantação.</p>
+
+<div id="expirado" class="msg erro">Este link expirou. Entre em contato com a equipe de implantação.</div>
+
+<h2>1. Usuários</h2>
+<div id="lista-usuarios"></div>
+<button type="button" id="add-usuario">+ Adicionar usuário</button>
+
+<h2>2. Equipes <span style="font-size:13px;color:#777;font-weight:400">(opcional)</span></h2>
+<div id="lista-equipes"></div>
+<button type="button" id="add-equipe">+ Adicionar equipe</button>
+
+<h2>3. Enviar</h2>
+<button type="button" class="primary" id="enviar">Enviar</button>
+<div id="msg" class="msg"></div>
+
+<script>
+// ─────────────────────────────────────────────
+// Configuração (preencher antes de publicar)
+// ─────────────────────────────────────────────
+const ENDPOINT = 'COLE_AQUI_URL_DO_FLUXO';
+const TOKEN = 'COLE_AQUI_TOKEN';
+const VALIDA_ATE = new Date('2026-10-20T23:59:59-03:00');
+
+const PERFIS = [
+  {id:1, nome:'Administrador'},
+  {id:2, nome:'Acesso Geral'},
+  {id:3, nome:'Estagiário'},
+  {id:4, nome:'Administrativo'},
+  {id:5, nome:'Financeiro'},
+  {id:6, nome:'Advogado'}
+];
+const FUNCOES = [
+  {id:1, nome:'Administrativo'},
+  {id:2, nome:'Estagiário'},
+  {id:3, nome:'Advogado'},
+  {id:4, nome:'Supervisor'},
+  {id:5, nome:'Coordenador'},
+  {id:6, nome:'Gerente'}
+];
+
+// ─────────────────────────────────────────────
+// Estado
+// ─────────────────────────────────────────────
+let seq = 0;
+let usuarios = []; // {id, nome, login, loginManual, email, cpf, perfil}
+let equipes  = []; // {id, nome, celula, membros:[{id, usuarioId, funcao, podeAtribuir}]}
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+function semAcento(s){ return String(s).normalize('NFD').replace(/[̀-ͯ]/g,''); }
+function gerarLogin(nome){
+  return semAcento(nome).toLowerCase().trim().replace(/\s+/g,'.').replace(/[^a-z0-9._-]/g,'').slice(0,40);
+}
+
+function optsPerfil(sel){
+  return '<option value="">Selecione o perfil</option>' + PERFIS.map(p =>
+    `<option value="${p.id}" ${p.id==sel?'selected':''}>${esc(p.nome)} (código ${p.id})</option>`).join('');
+}
+function optsFuncao(sel){
+  return '<option value="">Selecione a função</option>' + FUNCOES.map(f =>
+    `<option value="${f.id}" ${f.id==sel?'selected':''}>${esc(f.nome)} (código ${f.id})</option>`).join('');
+}
+function optsUsuario(sel){
+  return '<option value="">Selecione o usuário</option>' + usuarios.map(u =>
+    `<option value="${u.id}" ${u.id==sel?'selected':''}>${esc(u.nome || '(sem nome)')} — ${esc(u.login || 'sem login')}</option>`).join('');
+}
+
+// ─────────────────────────────────────────────
+// Render
+// ─────────────────────────────────────────────
+function renderUsuarios(){
+  $('lista-usuarios').innerHTML = usuarios.map(u => `
+    <div class="card" data-u="${u.id}">
+      <div class="grid">
+        <label>Nome completo
+          <input data-f="nome" value="${esc(u.nome)}" placeholder="Ex.: Maria da Silva">
+        </label>
+        <label>Login
+          <input data-f="login" value="${esc(u.login)}" placeholder="Ex.: maria.silva">
+        </label>
+        <label>E-mail
+          <input data-f="email" type="email" value="${esc(u.email)}" placeholder="maria@cliente.com.br">
+        </label>
+        <label>CPF (opcional)
+          <input data-f="cpf" value="${esc(u.cpf)}" placeholder="000.000.000-00">
+        </label>
+        <label>Perfil de acesso
+          <select data-f="perfil">${optsPerfil(u.perfil)}</select>
+        </label>
+      </div>
+      <button type="button" class="danger" data-rem-u="${u.id}">Remover usuário</button>
+    </div>`).join('') || '<p class="vazio">Nenhum usuário adicionado.</p>';
+}
+
+function renderEquipes(){
+  $('lista-equipes').innerHTML = equipes.map(eq => `
+    <div class="card" data-eq="${eq.id}">
+      <label>Código da célula
+        <input data-f="ecelula" type="number" min="1" value="${eq.celula ?? ''}" placeholder="Ex.: 1">
+      </label>
+      <label style="margin-top:8px">Nome da equipe
+        <input data-f="eqnome" value="${esc(eq.nome)}" placeholder="Ex.: Equipe Cível">
+      </label>
+      <div style="margin-top:10px">
+        ${eq.membros.map(m => `
+          <div class="membro" data-m="${m.id}">
+            <select data-f="musuario">${optsUsuario(m.usuarioId)}</select>
+            <select data-f="mfuncao">${optsFuncao(m.funcao)}</select>
+            <label class="chk"><input type="checkbox" data-f="mpode" ${m.podeAtribuir?'checked':''}> pode atribuir</label>
+            <button type="button" class="danger" data-rem-m="${m.id}">✕</button>
+          </div>`).join('') || '<p class="vazio">Nenhum integrante.</p>'}
+      </div>
+      <button type="button" data-add-m="${eq.id}">+ Integrante</button>
+      <button type="button" class="danger" data-rem-eq="${eq.id}">Remover equipe</button>
+    </div>`).join('') || '<p class="vazio">Nenhuma equipe adicionada.</p>';
+}
+
+// ─────────────────────────────────────────────
+// Eventos — usuários
+// ─────────────────────────────────────────────
+$('add-usuario').onclick = () => {
+  usuarios.push({id:++seq, nome:'', login:'', loginManual:false, email:'', cpf:'', perfil:''});
+  renderUsuarios(); renderEquipes();
+};
+
+$('lista-usuarios').addEventListener('input', e => {
+  const card = e.target.closest('[data-u]'); if (!card) return;
+  const u = usuarios.find(x => x.id == card.dataset.u);
+  const f = e.target.dataset.f; if (!f) return;
+  if (f === 'login') u.loginManual = true;
+  u[f] = e.target.value;
+  if (f === 'nome' && !u.loginManual) {
+    u.login = gerarLogin(u.nome);
+    card.querySelector('[data-f="login"]').value = u.login;
+  }
+  if (f === 'nome' || f === 'login') renderEquipes();
+});
+
+$('lista-usuarios').addEventListener('change', e => {
+  if (e.target.dataset.f !== 'perfil') return;
+  const card = e.target.closest('[data-u]');
+  usuarios.find(x => x.id == card.dataset.u).perfil = e.target.value;
+});
+
+$('lista-usuarios').addEventListener('click', e => {
+  const id = e.target.dataset.remU;
+  if (!id) return;
+  usuarios = usuarios.filter(u => u.id != id);
+  equipes.forEach(eq => eq.membros = eq.membros.filter(m => m.usuarioId != id));
+  renderUsuarios(); renderEquipes();
+});
+
+// ─────────────────────────────────────────────
+// Eventos — equipes
+// ─────────────────────────────────────────────
+$('add-equipe').onclick = () => {
+  equipes.push({id:++seq, nome:'', celula:null, membros:[]});
+  renderEquipes();
+};
+
+$('lista-equipes').addEventListener('input', e => {
+  const card = e.target.closest('[data-eq]'); if (!card) return;
+  const eq = equipes.find(x => x.id == card.dataset.eq);
+  if (e.target.dataset.f === 'eqnome') eq.nome = e.target.value;
+  if (e.target.dataset.f === 'ecelula') eq.celula = e.target.value ? Number(e.target.value) : null;
+});
+
+$('lista-equipes').addEventListener('change', e => {
+  const card = e.target.closest('[data-eq]'); if (!card) return;
+  const eq = equipes.find(x => x.id == card.dataset.eq);
+  const mEl = e.target.closest('[data-m]');
+  const m = mEl ? eq.membros.find(x => x.id == mEl.dataset.m) : null;
+  switch (e.target.dataset.f) {
+    case 'musuario': m.usuarioId = e.target.value ? Number(e.target.value) : null; break;
+    case 'mfuncao':  m.funcao    = e.target.value ? Number(e.target.value) : null; break;
+    case 'mpode':    m.podeAtribuir = e.target.checked; break;
+  }
+});
+
+$('lista-equipes').addEventListener('click', e => {
+  const t = e.target;
+  if (t.dataset.addM) {
+    equipes.find(x => x.id == t.dataset.addM).membros.push({id:++seq, usuarioId:null, funcao:null, podeAtribuir:false});
+    renderEquipes();
+  }
+  if (t.dataset.remM) {
+    equipes.forEach(eq => eq.membros = eq.membros.filter(m => m.id != t.dataset.remM));
+    renderEquipes();
+  }
+  if (t.dataset.remEq) {
+    equipes = equipes.filter(eq => eq.id != t.dataset.remEq);
+    renderEquipes();
+  }
+});
+
+// ─────────────────────────────────────────────
+// Validação
+// ─────────────────────────────────────────────
+function validar(){
+  if (!usuarios.length) return 'Adicione pelo menos um usuário.';
+
+  const logins = new Set();
+  for (const u of usuarios) {
+    const nome = (u.nome || '').trim();
+    const login = (u.login || '').trim();
+    const email = (u.email || '').trim();
+    if (!nome) return 'Preencha o nome de todos os usuários.';
+    if (nome.length > 40) return `Nome muito longo para usuário (máx. 40): ${nome}`;
+    if (!login) return `Informe o login de ${nome}.`;
+    if (/\s/.test(login) || login.length > 40) return `Login inválido para ${nome} (sem espaços, máx. 40).`;
+    if (logins.has(login.toLowerCase())) return `Login repetido: ${login}`;
+    logins.add(login.toLowerCase());
+    if (!/^\S+@\S+\.\S+$/.test(email) || email.length > 50) return `E-mail inválido para ${nome}.`;
+    if (u.cpf && u.cpf.replace(/\D/g,'').length !== 11) return `CPF de ${nome} deve ter 11 dígitos.`;
+    if (!u.perfil) return `Selecione o perfil de ${nome}.`;
+  }
+
+  for (const eq of equipes) {
+    const nome = (eq.nome || '').trim();
+    if (!eq.celula) return `Informe o código da célula da equipe "${nome || '(sem nome)'}".`;
+    if (!nome) return 'Dê um nome a todas as equipes.';
+    if (nome.length > 60) return `Nome da equipe muito longo (máx. 60): ${nome}`;
+    const chaves = new Set();
+    for (const m of eq.membros) {
+      if (!m.usuarioId) return `Selecione o usuário de todos os integrantes de "${nome}".`;
+      if (!m.funcao) return `Selecione a função de todos os integrantes de "${nome}".`;
+      const k = m.usuarioId + '-' + m.funcao;
+      if (chaves.has(k)) return `Integrante repetido com a mesma função em "${nome}".`;
+      chaves.add(k);
+    }
+  }
+  return '';
+}
+
+// ─────────────────────────────────────────────
+// Envio (o SQL é gerado no servidor, não aqui)
+// ─────────────────────────────────────────────
+function mostrar(texto, tipo){
+  const m = $('msg');
+  m.textContent = texto;
+  m.className = 'msg ' + tipo;
+}
+
+function montarPayload(){
+  return {
+    token: TOKEN,
+    enviadoEm: new Date().toISOString(),
+    usuarios: usuarios.map(u => ({
+      nomeCompleto: u.nome.trim(),
+      login: u.login.trim(),
+      email: u.email.trim(),
+      cpf: (u.cpf || '').trim(),
+      perfil: Number(u.perfil)
+    })),
+    equipes: equipes.map(eq => ({
+      celula: Number(eq.celula),
+      nome: eq.nome.trim(),
+      integrantes: eq.membros.map(m => {
+        const u = usuarios.find(x => x.id === m.usuarioId);
+        return {
+          login: u.login.trim(),
+          funcao: Number(m.funcao),
+          podeAtribuir: !!m.podeAtribuir
+        };
+      })
+    }))
+  };
+}
+
+$('enviar').onclick = async () => {
+  if (new Date() > VALIDA_ATE) return mostrar('Este link expirou.', 'erro');
+  if (ENDPOINT.startsWith('COLE_AQUI')) return mostrar('Página sem endereço de envio configurado.', 'erro');
+
+  const erro = validar();
+  if (erro) return mostrar(erro, 'erro');
+
+  const btn = $('enviar');
+  btn.disabled = true; btn.textContent = 'Enviando...';
+  try {
+    // text/plain evita preflight de CORS; o fluxo lê o corpo como texto e converte em JSON
+    await fetch(ENDPOINT, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: {'Content-Type': 'text/plain;charset=utf-8'},
+      body: JSON.stringify(montarPayload())
+    });
+    mostrar('Cadastro enviado. Obrigado! A equipe de implantação entrará em contato se houver algo a ajustar.', 'ok');
+  } catch (err) {
+    mostrar('Não foi possível enviar. Verifique a conexão e tente novamente.', 'erro');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Enviar';
+  }
+};
+
+// Link expirado: desativa o formulário
+if (new Date() > VALIDA_ATE) {
+  $('expirado').style.display = 'block';
+  $('enviar').disabled = true;
+}
+
+renderUsuarios();
+renderEquipes();
+</script>
+</body>
+</html>
